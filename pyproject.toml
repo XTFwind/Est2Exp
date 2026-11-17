@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "est2exp"
+version = "0.1.0"
+description = "Model-level pipeline graphs and topology-aware communication simulation"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+est2exp = "est2exp.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["est2exp*"]
+
+[tool.setuptools.package-data]
+"est2exp.dag" = ["viewer.html"]
+"est2exp.experience_bank" = ["*.md"]

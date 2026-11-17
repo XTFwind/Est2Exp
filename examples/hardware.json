@@ -1,0 +1,22 @@
+{
+  "topology": {
+    "total_devices": 4,
+    "default_compute_tflops": 100,
+    "default_memory_capacity_gb": 16,
+    "default_hbm_bandwidth_bytes_s": 400000000000,
+    "device_overrides": {"3": {"compute_tflops": 80}},
+    "clos": {"leaf_count": 2, "spine_count": 1, "server_leaf_count": 1},
+    "affinity_groups": [
+      {"affinity_group_id": 0, "servers": [{"server_id": 0, "ranks": [0, 1], "leaf_ids": [0]}]},
+      {"affinity_group_id": 1, "servers": [{"server_id": 1, "ranks": [2, 3], "leaf_ids": [1]}]}
+    ],
+    "link_overrides": [{"source": "server:1", "target": "leaf:1", "efficiency": 0.85}]
+  },
+  "network": {
+    "bandwidth_unit_bits": 1000000000,
+    "intra_server": {"bandwidth_gbps": 160, "latency_s": 0.000001},
+    "intra_group": {"bandwidth_gbps": 80, "latency_s": 0.000002},
+    "server_leaf": {"bandwidth_gbps": 40, "efficiency": 0.9, "latency_s": 0.000003},
+    "leaf_spine": {"bandwidth_gbps": 100, "latency_s": 0.000001}
+  }
+}

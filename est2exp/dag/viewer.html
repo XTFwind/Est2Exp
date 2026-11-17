@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Training DAG · Est2Exp</title>
+<style>
+:root{color-scheme:light;font-family:Inter,"Segoe UI",sans-serif;color:#152f35;background:#fafbf8}
+*{box-sizing:border-box}body{margin:0;height:100dvh;display:flex;flex-direction:column}
+header,nav,footer{padding:14px clamp(14px,3vw,48px);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+header{background:#173d40;color:white;justify-content:space-between}h1{font-size:clamp(20px,2.4vw,32px);margin:0;font-weight:610;letter-spacing:-.035em}
+header p{margin:4px 0 0;color:#c4dbd5}#metric{font-variant-numeric:tabular-nums;text-align:right}
+nav{border-bottom:1px solid #cfdad5;background:white;justify-content:space-between;padding-top:10px;padding-bottom:10px}
+.group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}button{background:white;border:1px solid #b7c9c3;border-radius:5px;color:#26464a;font:inherit;padding:5px 10px;cursor:pointer}button:hover,button:focus-visible{background:#e9f2ee}
+main{flex:1;min-height:0;display:flex;position:relative}#viewport{min-width:0;flex:1;overflow:auto;position:relative;background:#f7f9f6;touch-action:pan-x pan-y}svg{display:block;user-select:none}
+.node{cursor:pointer;outline:none}.node:hover rect,.node:focus-visible rect,.node.selected rect{stroke:#0b2225;stroke-width:2.8}
+path.edge{fill:none;stroke:#9cacaa;stroke-width:1.5}.edge.related{stroke:#193f45;stroke-width:2.8}
+aside{width:min(375px,37vw);background:#fff;overflow:auto;border-left:1px solid #cfdad5;padding:16px}aside[hidden]{display:none}
+aside h2{font-size:17px;overflow-wrap:anywhere}aside pre{font:12px/1.6 ui-monospace,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+footer{font-size:13px;color:#476064;border-top:1px solid #dbe4de;gap:14px}footer span::before{content:"";display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;background:var(--dot)}
+@media(max-width:650px){header,nav,footer{padding:8px 12px;gap:5px}aside{position:absolute;right:0;top:0;bottom:0;width:min(320px,88vw)}footer{font-size:11px}}
+</style></head>
+<body><header><div><h1 id="heading">Training DAG</h1><p id="summary"></p></div><div id="metric"></div></header>
+<nav aria-label="Graph navigation"><div class="group"><button id="fit">Fit full graph</button><button id="reset">Actual size</button><button id="out" aria-label="Zoom out">−</button><button id="in" aria-label="Zoom in">+</button><output id="scale"></output></div><label><input type="checkbox" id="critical"> Highlight critical path</label></nav>
+<main><div id="viewport" tabindex="0" aria-label="Full training graph"><svg id="graph" role="group" aria-label="Training events and directed dependencies"></svg></div>
+<aside id="inspector" hidden><button id="close">Close details</button><h2 id="nodeTitle"></h2><pre id="properties"></pre></aside></main>
+<footer><span style="--dot:#66b393">Forward</span><span style="--dot:#d59b69">Backward</span><span style="--dot:#69a6c6">Pipeline transfer</span><span style="--dot:#9b8ac3">Data parallel sync</span></footer>
+<script type="application/json" id="data">/*GRAPH_DATA*/</script>
+<script>
+"use strict";
+const data=JSON.parse(document.querySelector("#data").textContent), {nodes,edges}=data.dag;
+const get=id=>document.getElementById(id), svg=get("graph"), view=get("viewport");
+const names={gpipe:"GPipe","1f1b":"1F1B",vpp:"VPP",dual_pipe:"DualPipe"};
+get("heading").textContent=names[data.schedule]+" training DAG";
+get("summary").textContent=nodes.length.toLocaleString()+" events · "+edges.length.toLocaleString()+" dependencies";
+get("metric").textContent=(data.latency*1000).toPrecision(5)+" ms · "+(data.timing==="communication_only"?"Communication only":"Compute and communication");
+function element(tag,attrs,parent,text){
+  const e=document.createElementNS("http://www.w3.org/2000/svg",tag);
+  for(const [key,val] of Object.entries(attrs)) e.setAttribute(key,val);
+  if(text!==undefined) e.textContent=text;
+  parent.append(e);return e;
+}
+const defs=element("defs",{},svg),marker=element("marker",{id:"arrow",viewBox:"0 0 8 8",refX:7,refY:4,markerWidth:5,markerHeight:5,orient:"auto"},defs);
+element("path",{d:"M0 0L8 4L0 8Z",fill:"#7c9290"},marker);
+const adjacency=new Map(nodes.map(n=>[n.id,[]])),degree=new Map(nodes.map(n=>[n.id,0])),depth=new Map(nodes.map(n=>[n.id,0]));
+for(const e of edges){adjacency.get(e.source).push(e.target);degree.set(e.target,degree.get(e.target)+1);}
+const queue=nodes.filter(n=>!degree.get(n.id)).map(n=>n.id);
+for(let i=0;i<queue.length;i++) for(const v of adjacency.get(queue[i])){
+  depth.set(v,Math.max(depth.get(v),depth.get(queue[i])+1));degree.set(v,degree.get(v)-1);if(!degree.get(v))queue.push(v);
+}
+if(queue.length!==nodes.length) throw Error("Training graph contains a cycle");
+function lane(n){return n.ranks.length===1?"Device "+n.ranks[0]:n.kind==="pp_send"?"PP from device "+n.ranks[0]:"DP · "+n.ranks.join(", ");}
+const lanes=new Map(),coords=new Map(), w=144,h=45,dx=188,dy=69,margin=144;
+let maxDepth=0;
+for(const n of nodes){
+  const key=lane(n), d=depth.get(n.id);maxDepth=Math.max(maxDepth,d);
+  if(!lanes.has(key)) lanes.set(key,{counts:new Map(),rows:1});
+  const l=lanes.get(key),slot=l.counts.get(d)||0;l.counts.set(d,slot+1);l.rows=Math.max(l.rows,slot+1);
+  coords.set(n.id,{x:margin+d*dx,slot,l});
+}
+const width=margin+maxDepth*dx+w+45;let y=18;
+for(const [key,l] of [...lanes].sort(([a],[b])=>a.localeCompare(b,"en",{numeric:true}))){
+  l.y=y;const height=l.rows*dy+12;
+  element("rect",{x:4,y,width:width-8,height,fill:"#fff",rx:5,stroke:"#dde6e1"},svg);
+  element("text",{x:14,y:y+32,fill:"#586e70","font-size":12},svg,key.length>18?key.slice(0,17)+"…":key);
+  y+=height+6;
+}
+const height=y+12;svg.setAttribute("viewBox","0 0 "+width+" "+height);
+for(const p of coords.values()) p.y=p.l.y+12+p.slot*dy;
+const edgeLayer=element("g",{},svg), nodeLayer=element("g",{},svg), critical=new Set(data.critical),parallelEdges=new Map();
+for(const e of edges){
+  const a=coords.get(e.source),b=coords.get(e.target),x1=a.x+w,y1=a.y+h/2,y2=b.y+h/2;
+  const pair=JSON.stringify([e.source,e.target]),index=parallelEdges.get(pair)||0;
+  parallelEdges.set(pair,index+1);
+  const offset=5*index, path=element("path",{class:"edge",d:"M"+x1+" "+(y1+offset)+" H"+(x1+8)+" L"+(b.x-15)+" "+(y2+offset)+" H"+b.x,"marker-end":"url(#arrow)",
+    "data-source":e.source,"data-target":e.target,"data-kind":e.kind},edgeLayer);
+  if(e.kind==="stage_order")path.setAttribute("stroke-dasharray","4 3");
+  element("title",{},path,e.kind+" · "+e.source+" → "+e.target);
+}
+const palette={f:["#e4f3eb","#69a98c"],b:["#fff0df","#c48d58"],p:["#e4f2f9","#71a5bf"],d:["#eeeaf8","#a28dbd"],other:["#eef0ef","#9eaeae"]};
+function inspect(n,g){
+  svg.querySelector(".selected")?.classList.remove("selected");g.classList.add("selected");
+  for(const p of edgeLayer.children) p.classList.toggle("related",p.dataset.source===n.id||p.dataset.target===n.id);
+  get("inspector").hidden=false;get("nodeTitle").textContent=n.id;
+  get("properties").textContent=JSON.stringify({event:n,estimate:data.details[n.id]},null,2);
+}
+for(const n of nodes){
+  const p=coords.get(n.id), k=n.kind, colors=k==="pp_send"?palette.p:["all_reduce","all_gather","reduce_scatter"].includes(k)?palette.d:
+    k.startsWith("f")?palette.f:/back|grad|^b/.test(k)?palette.b:palette.other;
+  const g=element("g",{class:"node","data-id":n.id,tabindex:0,role:"button","aria-label":n.id,transform:"translate("+p.x+" "+p.y+")"},nodeLayer);
+  element("title",{},g,n.id);element("rect",{width:w,height:h,rx:6,fill:colors[0],stroke:colors[1],"stroke-width":1.4},g);
+  const eventName=k==="pp_send"?(n.direction==="backward"?"PP backward":"PP forward"):k.replaceAll("_"," ");
+  const arrow=n.pipeline_direction==="increasing_stage"?" →":n.pipeline_direction==="decreasing_stage"?" ←":"";
+  element("text",{x:9,y:18,"font-size":12,"font-weight":650,fill:"#183637"},g,eventName+arrow);
+  const chunk=data.schedule==="vpp"?(n.chunk!=null?"C"+n.chunk:n.source_chunk!=null?"C"+n.source_chunk+"→"+n.target_chunk:""):"";
+  const label=[n.stage!=null?"S"+n.stage:"",chunk,n.layer!=null?"L"+n.layer:"",n.microbatch!=null?"MB"+n.microbatch:"",n.bytes!=null&&n.microbatch==null?n.bytes+" B":""].filter(Boolean).join(" · ");
+  element("text",{x:9,y:34,"font-size":10,fill:"#425e5f"},g,label);
+  g.onclick=()=>inspect(n,g);g.onkeydown=e=>{if(e.key==="Enter")inspect(n,g);};
+}
+get("critical").onchange=e=>{for(const g of nodeLayer.children)g.style.opacity=e.target.checked&&!critical.has(g.dataset.id)?0.45:1;};
+get("close").onclick=()=>{get("inspector").hidden=true;svg.querySelector(".selected")?.classList.remove("selected");for(const p of edgeLayer.children)p.classList.remove("related");};
+let zoom=1;
+function resize(next,anchorX=view.clientWidth/2,anchorY=view.clientHeight/2){
+  const prev=zoom,x=(view.scrollLeft+anchorX)/prev,y=(view.scrollTop+anchorY)/prev;
+  zoom=Math.max(0.0001,Math.min(4,next));svg.style.width=(width*zoom)+"px";svg.style.height=(height*zoom)+"px";
+  view.scrollLeft=x*zoom-anchorX;view.scrollTop=y*zoom-anchorY;get("scale").textContent=(zoom*100).toFixed(zoom<0.1?1:0)+"%";
+}
+get("fit").onclick=()=>{resize(Math.min(1,(view.clientWidth-4)/width,(view.clientHeight-4)/height));view.scrollTo(0,0);};
+get("reset").onclick=()=>resize(1);get("in").onclick=()=>resize(zoom*1.3);get("out").onclick=()=>resize(zoom/1.3);
+view.addEventListener("wheel",e=>{if(e.ctrlKey){e.preventDefault();const r=view.getBoundingClientRect();resize(zoom*(e.deltaY<0?1.14:1/1.14),e.clientX-r.left,e.clientY-r.top);}},{passive:false});
+let drag;
+view.onpointerdown=e=>{if(!e.target.closest(".node")&&e.button===0){drag=[e.clientX,e.clientY,view.scrollLeft,view.scrollTop];view.setPointerCapture(e.pointerId);}};
+view.onpointermove=e=>{if(drag)view.scrollTo(drag[2]+drag[0]-e.clientX,drag[3]+drag[1]-e.clientY);};
+view.onpointerup=view.onpointercancel=()=>{drag=null;};
+resize(Math.min(1,Math.max(.55,view.clientHeight/height)),0,0);
+</script></body></html>
